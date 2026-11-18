@@ -132,6 +132,9 @@ public struct ComposeUp: AsyncParsableCommand, @unchecked Sendable {
     /// Equal to `service.container_name` when set, otherwise either
     /// `<serviceName>.<dnsDomain>` (DNS path) or `<projectName>-<serviceName>` (legacy).
     private var serviceContainerNames: [String: String] = [:]
+    /// Named volumes this run created, until their first mount removes the
+    /// `lost+found` directory Apple Container puts in a new volume.
+    private var newVolumes: Set<String> = []
     private var containerConsoleColors: [String: NamedColor] = [:]
 
     private static let availableContainerConsoleColors: Set<NamedColor> = [
@@ -212,7 +215,9 @@ public struct ComposeUp: AsyncParsableCommand, @unchecked Sendable {
             print("\n--- Processing Volumes ---")
             for (volumeName, volumeConfig) in volumes {
                 guard let volumeConfig else { continue }
-                try await createVolume(name: volumeName, config: volumeConfig)
+                if let created = try await createVolume(name: volumeName, config: volumeConfig) {
+                    newVolumes.insert(created)
+                }
             }
             print("--- Volumes Processed ---\n")
         }
@@ -740,7 +745,9 @@ public struct ComposeUp: AsyncParsableCommand, @unchecked Sendable {
         process.waitUntilExit()
     }
 
-    private func createVolume(name volumeName: String, config volumeConfig: Volume) async throws {
+    /// Creates a top-level volume unless it is external or already exists.
+    /// - Returns: The volume's actual name when this call created it.
+    private func createVolume(name volumeName: String, config volumeConfig: Volume) async throws -> String? {
         let actualVolumeName = composeNamedVolumeName(
             source: volumeName,
             projectName: projectName,
@@ -750,12 +757,12 @@ public struct ComposeUp: AsyncParsableCommand, @unchecked Sendable {
         if volumeConfig.external?.isExternal == true {
             print("Info: Volume '\(volumeName)' is declared as external.")
             print("This tool assumes external volume '\(actualVolumeName)' already exists and will not attempt to create it.")
-            return
+            return nil
         }
 
         if (try? await ClientVolume.inspect(actualVolumeName)) != nil {
             print("Volume '\(actualVolumeName)' already exists")
-            return
+            return nil
         }
 
         print("Creating volume: \(volumeName) (Actual name: \(actualVolumeName))")
@@ -766,6 +773,32 @@ public struct ComposeUp: AsyncParsableCommand, @unchecked Sendable {
             labels: volumeConfig.labels ?? [:]
         )
         print("Volume '\(actualVolumeName)' created")
+        return actualVolumeName
+    }
+
+    /// Removes the empty `lost+found` directory from a new volume so it starts
+    /// empty, as a Docker volume does. Failure (for example an image without
+    /// `/bin/sh`) is reported as a warning and the volume is used as is.
+    private func removeLostFound(fromVolume volumeName: String, image: String, platform: String?) {
+        let process = Process()
+        process.launchPath = "/usr/bin/env"
+        process.arguments = ["container"] + lostFoundRemovalArguments(volumeName: volumeName, image: image, platform: platform)
+        process.standardOutput = FileHandle.nullDevice
+        let stderr = Pipe()
+        process.standardError = stderr
+        do {
+            try process.run()
+        } catch {
+            print("Warning: Could not prepare volume '\(volumeName)': \(error)")
+            return
+        }
+        let errorOutput = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        process.waitUntilExit()
+        if process.terminationStatus != 0 {
+            print(
+                "Warning: Could not remove 'lost+found' from new volume '\(volumeName)'; images that require an empty data directory may fail to initialize. "
+                    + errorOutput.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
     }
 
     private func setupNetwork(name networkName: String, config networkConfig: Network?) async throws {
@@ -923,6 +956,9 @@ public struct ComposeUp: AsyncParsableCommand, @unchecked Sendable {
         if let volumes = service.volumes {
             for volume in volumes {
                 let args = try await configVolume(volume, from: dockerCompose)
+                if let volumeName = namedVolumeSource(ofRunArgs: args), newVolumes.remove(volumeName) != nil {
+                    removeLostFound(fromVolume: volumeName, image: imageToRun, platform: service.platform)
+                }
                 runCommandArgs.append(contentsOf: args)
             }
         }
