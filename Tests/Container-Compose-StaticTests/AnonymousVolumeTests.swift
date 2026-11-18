@@ -76,6 +76,8 @@ struct AnonymousVolumeTests {
         let image = try #require(arguments.firstIndex(of: "web:latest"))
         #expect(arguments[image - 2 ..< image] == ["--entrypoint", "/bin/sh"])
         #expect(arguments.suffix(3) == ["seed", "/app/node_modules", AnonymousVolume.seedMountPoint])
+        let script = try #require(arguments.firstIndex(of: "-c")).advanced(by: 1)
+        #expect(arguments[script].hasPrefix(#"rmdir "$2/lost+found""#))
 
         let withoutPlatform = volume.seedArguments(volumeName: "v", image: "web:latest", platform: nil)
         #expect(!withoutPlatform.contains("--platform"))

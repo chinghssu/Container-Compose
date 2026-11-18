@@ -346,8 +346,12 @@ struct AnonymousVolume: Equatable {
     /// the image's files into an empty volume on first use. Without this a
     /// volume over `/app/node_modules` would hide the installed packages.
     /// The copy is skipped when the image has nothing at the destination.
+    ///
+    /// The empty `lost+found` directory at the root of Apple Container's
+    /// ext4 volumes is removed first (`rmdir` never removes a non-empty
+    /// directory), so the volume holds exactly what the image had.
     func seedArguments(volumeName: String, image: String, platform: String?) -> [String] {
-        let script = #"[ -d "$1" ] || exit 0; cp -a "$1"/. "$2"/ && chown "$(stat -c %u:%g "$1")" "$2" && chmod "$(stat -c %a "$1")" "$2""#
+        let script = #"rmdir "$2/lost+found" 2>/dev/null; [ -d "$1" ] || exit 0; cp -a "$1"/. "$2"/ && chown "$(stat -c %u:%g "$1")" "$2" && chmod "$(stat -c %a "$1")" "$2""#
         var arguments = ["run", "--rm"]
         if let platform {
             arguments.append(contentsOf: ["--platform", platform])
