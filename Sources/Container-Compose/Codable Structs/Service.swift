@@ -209,6 +209,24 @@ public struct Service: Codable, Hashable {
     }
 
     /// Custom initializer to handle decoding and basic validation.
+    /// Splits the string form of `command`/`entrypoint`, reporting malformed
+    /// quoting as a decoding error so the message carries the YAML path.
+    private static func shellWords(
+        _ value: String,
+        forKey key: CodingKeys,
+        in container: KeyedDecodingContainer<CodingKeys>
+    ) throws -> [String] {
+        do {
+            return try splitShellWords(value)
+        } catch {
+            throw DecodingError.dataCorruptedError(
+                forKey: key,
+                in: container,
+                debugDescription: "Could not split '\(key.stringValue)' into arguments: \(error.localizedDescription)"
+            )
+        }
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         image = try container.decodeIfPresent(String.self, forKey: .image)
@@ -271,10 +289,11 @@ public struct Service: Codable, Hashable {
         ports = try container.decodeIfPresent([String].self, forKey: .ports)
 
         // Decode 'command' which can be either a single string or an array of strings.
+        // The string form is split into words, as Docker Compose does.
         if let cmdArray = try? container.decodeIfPresent([String].self, forKey: .command) {
             command = cmdArray
         } else if let cmdString = try? container.decodeIfPresent(String.self, forKey: .command) {
-            command = [cmdString]
+            command = try Self.shellWords(cmdString, forKey: .command, in: container)
         } else {
             command = nil
         }
@@ -321,10 +340,11 @@ public struct Service: Codable, Hashable {
         hostname = try container.decodeIfPresent(String.self, forKey: .hostname)
         
         // Decode 'entrypoint' which can be either a single string or an array of strings.
+        // The string form is split into words, as Docker Compose does.
         if let entrypointArray = try? container.decodeIfPresent([String].self, forKey: .entrypoint) {
             entrypoint = entrypointArray
         } else if let entrypointString = try? container.decodeIfPresent(String.self, forKey: .entrypoint) {
-            entrypoint = [entrypointString]
+            entrypoint = try Self.shellWords(entrypointString, forKey: .entrypoint, in: container)
         } else {
             entrypoint = nil
         }

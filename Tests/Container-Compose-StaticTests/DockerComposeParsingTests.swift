@@ -280,8 +280,7 @@ struct DockerComposeParsingTests {
         let decoder = YAMLDecoder()
         let compose = try decoder.decode(DockerCompose.self, from: yaml)
         
-        #expect(compose.services["app"]??.command?.count == 1)
-        #expect(compose.services["app"]??.command?.first == "echo hello")
+        #expect(compose.services["app"]??.command == ["echo", "hello"])
     }
     
     @Test("Parse compose with restart policy")
