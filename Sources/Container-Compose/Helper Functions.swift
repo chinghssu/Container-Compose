@@ -21,6 +21,7 @@
 //  Created by Morris Richman on 6/17/25.
 //
 
+import CryptoKit
 import Foundation
 import Yams
 import Rainbow
@@ -283,6 +284,97 @@ func composeNamedVolumeName(
     }
 
     return "\(projectName)_\(source)"
+}
+
+/// A service volume entry that names only a container path, such as
+/// `/app/node_modules` or `/app/node_modules:ro`.
+///
+/// Docker backs these with a fresh volume seeded from the image, typically to
+/// keep a bind mount of the parent directory from hiding what the image
+/// installed there.
+struct AnonymousVolume: Equatable {
+    let destination: String
+    /// `ro` or `rw` when given; the only options Apple Container applies.
+    let mode: String?
+    /// False with the `nocopy` option, which asks for an empty volume.
+    let copiesImageContent: Bool
+
+    /// Short-syntax options accepted after the path. SELinux labels (`z`,
+    /// `Z`) and macOS consistency hints have no effect on Apple Container and
+    /// are ignored.
+    private static let knownOptions: Set<String> = ["ro", "rw", "nocopy", "z", "Z", "cached", "delegated", "consistent"]
+
+    /// Parses `entry` (after variable resolution) as an anonymous volume.
+    /// - Returns: `nil` for bind mounts and named volumes.
+    init?(_ entry: String) {
+        let components = entry.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        guard let destination = components.first, destination.hasPrefix("/"), components.count <= 2 else { return nil }
+        let options = components.count == 2 ? components[1].split(separator: ",").map(String.init) : []
+        // A second component that is not an option list is a container path:
+        // `/host:/container` is a bind mount.
+        guard components.count == 1 || (!options.isEmpty && options.allSatisfy(Self.knownOptions.contains)) else {
+            return nil
+        }
+        self.destination = destination
+        self.mode = options.last { $0 == "ro" || $0 == "rw" }
+        self.copiesImageContent = !options.contains("nocopy")
+    }
+
+    /// The volume's name: stable across `up` runs, so a recreated container
+    /// gets the same data back, and unique per project, service and path.
+    func volumeName(projectName: String, serviceName: String) -> String {
+        let digest = SHA256.hash(data: Data(destination.utf8))
+        let hash = digest.prefix(6).map { String(format: "%02x", $0) }.joined()
+        return "\(projectName)_\(serviceName)_anon_\(hash)"
+    }
+
+    /// The `-v` argument mounting `volumeName` at the destination.
+    func mountArgument(volumeName: String) -> String {
+        [volumeName, destination, mode].compactMap { $0 }.joined(separator: ":")
+    }
+
+    /// Labels identifying the volume as this service's anonymous volume.
+    func labels(projectName: String, serviceName: String) -> [String: String] {
+        [
+            "com.docker.compose.project": projectName,
+            "com.docker.compose.service": serviceName,
+            Self.destinationLabel: destination,
+        ]
+    }
+
+    static let destinationLabel = "container-compose.anonymous-volume"
+
+    /// Mount point of the new volume inside the seeding container.
+    static let seedMountPoint = "/__container_compose_seed"
+
+    /// `container run` arguments that copy the image's content at the
+    /// destination into a new volume, keeping ownership and permissions.
+    ///
+    /// Apple Container mounts new volumes empty, unlike Docker, which copies
+    /// the image's files into an empty volume on first use. Without this a
+    /// volume over `/app/node_modules` would hide the installed packages.
+    /// The copy is skipped when the image has nothing at the destination.
+    ///
+    /// The empty `lost+found` directory at the root of Apple Container's
+    /// ext4 volumes is removed first (`rmdir` never removes a non-empty
+    /// directory), so the volume holds exactly what the image had.
+    func seedArguments(volumeName: String, image: String, platform: String?) -> [String] {
+        // $1: image path, $2: volume mount point, $3: "copy" or "nocopy".
+        let script = #"[ ! -d "$2/lost+found" ] || rmdir "$2/lost+found" || exit 1; [ "$3" = copy ] && [ -d "$1" ] || exit 0; cp -a "$1"/. "$2"/ && chown "$(stat -c %u:%g "$1")" "$2" && chmod "$(stat -c %a "$1")" "$2""#
+        // Root, whatever USER the image sets: the new volume is owned by root.
+        // The chown below then hands it to the owner of the image's directory.
+        var arguments = ["run", "--rm", "--user", "0:0"]
+        if let platform {
+            arguments.append(contentsOf: ["--platform", platform])
+        }
+        arguments.append(contentsOf: [
+            "-v", "\(volumeName):\(Self.seedMountPoint)",
+            "--entrypoint", "/bin/sh",
+            image,
+            "-c", script, "seed", destination, Self.seedMountPoint, copiesImageContent ? "copy" : "nocopy",
+        ])
+        return arguments
+    }
 }
 
 extension String: @retroactive Error {}

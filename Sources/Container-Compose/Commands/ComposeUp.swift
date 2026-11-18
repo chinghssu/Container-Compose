@@ -768,6 +768,57 @@ public struct ComposeUp: AsyncParsableCommand, @unchecked Sendable {
         print("Volume '\(actualVolumeName)' created")
     }
 
+    /// Creates the service's volume for an anonymous volume entry, seeded from
+    /// the image when first created, and returns its `-v` argument.
+    ///
+    /// The volume outlives the container, so `up` reattaches existing data
+    /// instead of starting from the image again, as Docker Compose does.
+    private func prepareAnonymousVolume(
+        _ volume: AnonymousVolume,
+        serviceName: String,
+        image: String,
+        platform: String?
+    ) async throws -> String {
+        let volumeName = volume.volumeName(projectName: projectName, serviceName: serviceName)
+        if (try? await ClientVolume.inspect(volumeName)) == nil {
+            print("Creating volume '\(volumeName)' for \(serviceName):\(volume.destination)")
+            _ = try await ClientVolume.create(
+                name: volumeName,
+                driver: "local",
+                driverOpts: [:],
+                labels: volume.labels(projectName: projectName, serviceName: serviceName)
+            )
+            seedAnonymousVolume(volume, volumeName: volumeName, image: image, platform: platform)
+        }
+        return volume.mountArgument(volumeName: volumeName)
+    }
+
+    /// Copies the image's content at the destination into a new volume.
+    /// Failure (for example an image without `/bin/sh`) leaves the volume
+    /// empty and is reported as a warning.
+    private func seedAnonymousVolume(_ volume: AnonymousVolume, volumeName: String, image: String, platform: String?) {
+        let process = Process()
+        process.launchPath = "/usr/bin/env"
+        process.arguments = ["container"] + volume.seedArguments(volumeName: volumeName, image: image, platform: platform)
+        process.standardOutput = FileHandle.nullDevice
+        let stderr = Pipe()
+        process.standardError = stderr
+        do {
+            try process.run()
+        } catch {
+            print("Warning: Could not copy \(image):\(volume.destination) into volume '\(volumeName)': \(error)")
+            return
+        }
+        let errorOutput = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        process.waitUntilExit()
+        if process.terminationStatus != 0 {
+            print(
+                "Warning: Could not copy \(image):\(volume.destination) into volume '\(volumeName)'; it starts empty. "
+                    + "To retry on the next 'up', remove the container and run 'container volume delete \(volumeName)'. "
+                    + errorOutput.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+
     private func setupNetwork(name networkName: String, config networkConfig: Network?) async throws {
         let actualNetworkName = networkConfig?.name ?? networkName  // Use explicit name or key as name
 
@@ -922,6 +973,12 @@ public struct ComposeUp: AsyncParsableCommand, @unchecked Sendable {
         // Add volume mounts
         if let volumes = service.volumes {
             for volume in volumes {
+                if let anonymous = AnonymousVolume(resolveVariable(volume, with: environmentVariables)) {
+                    let mount = try await prepareAnonymousVolume(
+                        anonymous, serviceName: serviceName, image: imageToRun, platform: service.platform)
+                    runCommandArgs.append(contentsOf: ["-v", mount])
+                    continue
+                }
                 let args = try await configVolume(volume, from: dockerCompose)
                 runCommandArgs.append(contentsOf: args)
             }
