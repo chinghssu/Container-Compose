@@ -21,6 +21,7 @@
 //  Created by Morris Richman on 6/17/25.
 //
 
+import CryptoKit
 import Foundation
 import Yams
 import Rainbow
@@ -283,6 +284,82 @@ func composeNamedVolumeName(
     }
 
     return "\(projectName)_\(source)"
+}
+
+/// A service volume entry that names only a container path, such as
+/// `/app/node_modules` or `/app/node_modules:ro`.
+///
+/// Docker backs these with a fresh volume seeded from the image, typically to
+/// keep a bind mount of the parent directory from hiding what the image
+/// installed there.
+struct AnonymousVolume: Equatable {
+    let destination: String
+    let mode: String?
+
+    /// Parses `entry` (after variable resolution) as an anonymous volume.
+    /// - Returns: `nil` for bind mounts and named volumes.
+    init?(_ entry: String) {
+        let components = entry.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        guard let destination = components.first, destination.hasPrefix("/") else { return nil }
+        switch components.count {
+        case 1:
+            mode = nil
+        case 2 where ["ro", "rw"].contains(components[1]):
+            mode = components[1]
+        default:
+            return nil
+        }
+        self.destination = destination
+    }
+
+    /// The volume's name: stable across `up` runs, so a recreated container
+    /// gets the same data back, and unique per project, service and path.
+    func volumeName(projectName: String, serviceName: String) -> String {
+        let digest = SHA256.hash(data: Data(destination.utf8))
+        let hash = digest.prefix(6).map { String(format: "%02x", $0) }.joined()
+        return "\(projectName)_\(serviceName)_anon_\(hash)"
+    }
+
+    /// The `-v` argument mounting `volumeName` at the destination.
+    func mountArgument(volumeName: String) -> String {
+        [volumeName, destination, mode].compactMap { $0 }.joined(separator: ":")
+    }
+
+    /// Labels identifying the volume as this service's anonymous volume.
+    func labels(projectName: String, serviceName: String) -> [String: String] {
+        [
+            "com.docker.compose.project": projectName,
+            "com.docker.compose.service": serviceName,
+            Self.destinationLabel: destination,
+        ]
+    }
+
+    static let destinationLabel = "container-compose.anonymous-volume"
+
+    /// Mount point of the new volume inside the seeding container.
+    static let seedMountPoint = "/__container_compose_seed"
+
+    /// `container run` arguments that copy the image's content at the
+    /// destination into a new volume, keeping ownership and permissions.
+    ///
+    /// Apple Container mounts new volumes empty, unlike Docker, which copies
+    /// the image's files into an empty volume on first use. Without this a
+    /// volume over `/app/node_modules` would hide the installed packages.
+    /// The copy is skipped when the image has nothing at the destination.
+    func seedArguments(volumeName: String, image: String, platform: String?) -> [String] {
+        let script = #"[ -d "$1" ] || exit 0; cp -a "$1"/. "$2"/ && chown "$(stat -c %u:%g "$1")" "$2" && chmod "$(stat -c %a "$1")" "$2""#
+        var arguments = ["run", "--rm"]
+        if let platform {
+            arguments.append(contentsOf: ["--platform", platform])
+        }
+        arguments.append(contentsOf: [
+            "-v", "\(volumeName):\(Self.seedMountPoint)",
+            "--entrypoint", "/bin/sh",
+            image,
+            "-c", script, "seed", destination, Self.seedMountPoint,
+        ])
+        return arguments
+    }
 }
 
 extension String: @retroactive Error {}
