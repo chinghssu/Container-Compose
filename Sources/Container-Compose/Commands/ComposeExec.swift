@@ -54,8 +54,14 @@ public struct ComposeExec: AsyncParsableCommand {
     @Argument(parsing: .captureForPassthrough, help: "The command and its arguments")
     var command: [String] = []
 
+    /// The command to run. Passthrough parsing keeps a leading `--`
+    /// (`exec web -- ls`), which separates options and is not part of it.
+    var commandArguments: [String] {
+        command.first == "--" ? Array(command.dropFirst()) : command
+    }
+
     public func validate() throws {
-        guard !command.isEmpty else {
+        guard !commandArguments.isEmpty else {
             throw ValidationError("Missing the command to execute in '\(service)'.")
         }
     }
@@ -101,7 +107,7 @@ public struct ComposeExec: AsyncParsableCommand {
         }
 
         arguments.append(containerID)
-        arguments.append(contentsOf: command)
+        arguments.append(contentsOf: commandArguments)
         return arguments
     }
 }

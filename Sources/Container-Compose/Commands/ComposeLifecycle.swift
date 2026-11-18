@@ -76,14 +76,19 @@ public struct ComposeStop: AsyncParsableCommand {
 
     public func run() async throws {
         let (_, containers) = try await project.resolveContainers(for: services)
-        await Self.stop(containers, timeout: timeout)
+        let failed = await Self.stop(containers, timeout: timeout)
+        if !failed.isEmpty {
+            throw ComposeError.containersNotStopped(failed)
+        }
     }
 
     /// Stops the running containers in reverse dependency order, so a
-    /// service stops before what it depends on. Failures are reported and do
-    /// not stop the remaining containers, as with `down`.
-    static func stop(_ containers: [ServiceContainer], timeout: Int32?) async {
+    /// service stops before what it depends on. A failure is reported and
+    /// does not stop the remaining containers.
+    /// - Returns: The IDs of the containers that could not be stopped.
+    static func stop(_ containers: [ServiceContainer], timeout: Int32?) async -> [String] {
         let client = ContainerClient()
+        var failed: [String] = []
         for container in containers.reversed() where container.isRunning {
             print("Stopping \(container.serviceName) (\(container.id))")
             let options = timeout.map { ComposeStopOptions.resolve(timeoutInSeconds: $0) }
@@ -92,8 +97,10 @@ public struct ComposeStop: AsyncParsableCommand {
                 try await client.stop(id: container.id, opts: options)
             } catch {
                 print("Error: Could not stop \(container.id): \(error)")
+                failed.append(container.id)
             }
         }
+        return failed
     }
 }
 
@@ -120,11 +127,14 @@ public struct ComposeRestart: AsyncParsableCommand {
     /// `up` to recreate containers.
     public func run() async throws {
         let (_, containers) = try await project.resolveContainers(for: services)
-        await ComposeStop.stop(containers, timeout: timeout)
+        let failed = await ComposeStop.stop(containers, timeout: timeout)
 
-        // Re-read the state: stopping changed it, and a container that failed
-        // to stop must not be started twice.
+        // Re-read the state: stopping changed it. A container that failed to
+        // stop is still running, so it is not started again, and is reported.
         let (_, stopped) = try await project.resolveContainers(for: services)
         try await ComposeStart.start(stopped)
+        if !failed.isEmpty {
+            throw ComposeError.containersNotStopped(failed)
+        }
     }
 }

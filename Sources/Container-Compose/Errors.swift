@@ -48,6 +48,7 @@ public enum ComposeError: Error, LocalizedError {
     case noSuchService(String)
     case noContainers([String])
     case serviceNotRunning(String)
+    case containersNotStopped([String])
 
     public var errorDescription: String? {
         switch self {
@@ -73,6 +74,8 @@ public enum ComposeError: Error, LocalizedError {
             return "No containers found for '\(services.joined(separator: "', '"))'. Run 'container-compose up' first."
         case .serviceNotRunning(let service):
             return "Service '\(service)' is not running. Start it with 'container-compose up' or 'container-compose start \(service)'."
+        case .containersNotStopped(let ids):
+            return "Could not stop '\(ids.joined(separator: "', '"))'."
         }
     }
 }

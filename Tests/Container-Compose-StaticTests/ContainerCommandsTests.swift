@@ -115,9 +115,17 @@ struct ComposeExecTests {
                 == ["--interactive", "--env", "A=1", "--env", "B", "--user", "app", "c1", "env"])
     }
 
+    @Test("A leading -- separates the command and is not passed on")
+    func doubleDash() throws {
+        let command = try exec(["web", "--", "ls", "--", "-la"])
+        #expect(command.commandArguments == ["ls", "--", "-la"])
+        #expect(command.execArguments(containerID: "c1", stdinIsTerminal: false) == ["--interactive", "c1", "ls", "--", "-la"])
+    }
+
     @Test("A missing command is rejected")
     func missingCommand() {
         #expect(throws: (any Error).self) { try exec(["web"]) }
+        #expect(throws: (any Error).self) { try exec(["web", "--"]) }
     }
 }
 
