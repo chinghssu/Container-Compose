@@ -20,11 +20,11 @@ import Testing
 @Suite("New volume preparation")
 struct VolumePreparationTests {
 
-    @Test("lost+found removal runs the service image and only removes an empty directory")
+    @Test("lost+found removal runs the service image as root and only removes an empty directory")
     func removalArguments() throws {
         let arguments = lostFoundRemovalArguments(volumeName: "p_pgdata", image: "postgres:16-alpine", platform: nil)
 
-        #expect(arguments.prefix(2) == ["run", "--rm"])
+        #expect(arguments.prefix(4) == ["run", "--rm", "--user", "0:0"])
         #expect(!arguments.contains("--platform"))
         #expect(arguments.contains("p_pgdata:\(volumeHelperMountPoint)"))
         let image = try #require(arguments.firstIndex(of: "postgres:16-alpine"))
@@ -33,13 +33,15 @@ struct VolumePreparationTests {
         let script = try #require(arguments.firstIndex(of: "-c")).advanced(by: 1)
         #expect(arguments[script].contains(#"rmdir "$1/lost+found""#))
         #expect(!arguments[script].contains("rm -"))
+        // A failed removal must surface instead of being swallowed.
+        #expect(!arguments[script].contains("exit 0"))
         #expect(arguments.last == volumeHelperMountPoint)
     }
 
     @Test("The service platform is passed to the helper container")
     func platform() {
         let arguments = lostFoundRemovalArguments(volumeName: "v", image: "img", platform: "linux/amd64")
-        #expect(arguments.prefix(4) == ["run", "--rm", "--platform", "linux/amd64"])
+        #expect(arguments.prefix(6) == ["run", "--rm", "--user", "0:0", "--platform", "linux/amd64"])
     }
 
     @Test("Named volume mounts are recognized; bind mounts are not")

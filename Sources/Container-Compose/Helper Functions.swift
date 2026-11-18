@@ -298,7 +298,9 @@ let volumeHelperMountPoint = "/__container_compose_volume"
 /// directory that holds anything. `rmdir` only removes an empty directory, so
 /// this never deletes data.
 func lostFoundRemovalArguments(volumeName: String, image: String, platform: String?) -> [String] {
-    var arguments = ["run", "--rm"]
+    // Root, whatever USER the image sets: the volume and its lost+found are
+    // owned by root. Fails only when lost+found exists and cannot be removed.
+    var arguments = ["run", "--rm", "--user", "0:0"]
     if let platform {
         arguments.append(contentsOf: ["--platform", platform])
     }
@@ -306,7 +308,7 @@ func lostFoundRemovalArguments(volumeName: String, image: String, platform: Stri
         "-v", "\(volumeName):\(volumeHelperMountPoint)",
         "--entrypoint", "/bin/sh",
         image,
-        "-c", #"rmdir "$1/lost+found" 2>/dev/null; exit 0"#, "prepare", volumeHelperMountPoint,
+        "-c", #"[ ! -d "$1/lost+found" ] || rmdir "$1/lost+found""#, "prepare", volumeHelperMountPoint,
     ])
     return arguments
 }
