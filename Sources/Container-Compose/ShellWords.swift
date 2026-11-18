@@ -52,6 +52,10 @@ public enum ShellWordsError: Error, LocalizedError, Equatable {
 /// - Quotes delimit but do not end a word, and `""` or `''` yields an empty
 ///   argument.
 ///
+/// These are POSIX quoting rules. Docker Compose's own parser can differ in
+/// rare cases, such as a backslash before an ordinary character inside double
+/// quotes; common command lines split the same way.
+///
 /// - Throws: `ShellWordsError.unterminatedQuote` if a quote is never closed.
 func splitShellWords(_ input: String) throws -> [String] {
     var words: [String] = []
