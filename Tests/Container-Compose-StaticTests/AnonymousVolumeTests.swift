@@ -28,6 +28,17 @@ struct AnonymousVolumeTests {
         #expect(AnonymousVolume("/data:rw")?.mode == "rw")
     }
 
+    @Test("Options Apple Container cannot apply are accepted and ignored; nocopy skips seeding")
+    func options() {
+        #expect(AnonymousVolume("/data:z")?.mode == nil)
+        #expect(AnonymousVolume("/data:ro,Z")?.mode == "ro")
+        #expect(AnonymousVolume("/data:cached")?.copiesImageContent == true)
+        #expect(AnonymousVolume("/data:nocopy")?.copiesImageContent == false)
+        #expect(AnonymousVolume("/data:rw,nocopy")?.mode == "rw")
+        #expect(AnonymousVolume("/data:bogus") == nil)
+        #expect(AnonymousVolume("/data:") == nil)
+    }
+
     @Test("Bind mounts, named volumes and relative paths are not anonymous")
     func notAnonymous() {
         #expect(AnonymousVolume("/host/path:/container") == nil)
@@ -71,13 +82,16 @@ struct AnonymousVolumeTests {
         let volume = try #require(AnonymousVolume("/app/node_modules"))
         let arguments = volume.seedArguments(volumeName: "v", image: "web:latest", platform: "linux/arm64")
 
-        #expect(arguments.prefix(4) == ["run", "--rm", "--platform", "linux/arm64"])
+        #expect(arguments.prefix(6) == ["run", "--rm", "--user", "0:0", "--platform", "linux/arm64"])
         #expect(arguments.contains("v:\(AnonymousVolume.seedMountPoint)"))
         let image = try #require(arguments.firstIndex(of: "web:latest"))
         #expect(arguments[image - 2 ..< image] == ["--entrypoint", "/bin/sh"])
-        #expect(arguments.suffix(3) == ["seed", "/app/node_modules", AnonymousVolume.seedMountPoint])
+        #expect(arguments.suffix(4) == ["seed", "/app/node_modules", AnonymousVolume.seedMountPoint, "copy"])
         let script = try #require(arguments.firstIndex(of: "-c")).advanced(by: 1)
-        #expect(arguments[script].hasPrefix(#"rmdir "$2/lost+found""#))
+        #expect(arguments[script].hasPrefix(#"[ ! -d "$2/lost+found" ] || rmdir "$2/lost+found" || exit 1;"#))
+
+        let nocopy = try #require(AnonymousVolume("/cache:nocopy"))
+        #expect(nocopy.seedArguments(volumeName: "v", image: "img", platform: nil).last == "nocopy")
 
         let withoutPlatform = volume.seedArguments(volumeName: "v", image: "web:latest", platform: nil)
         #expect(!withoutPlatform.contains("--platform"))

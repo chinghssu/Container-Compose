@@ -294,22 +294,30 @@ func composeNamedVolumeName(
 /// installed there.
 struct AnonymousVolume: Equatable {
     let destination: String
+    /// `ro` or `rw` when given; the only options Apple Container applies.
     let mode: String?
+    /// False with the `nocopy` option, which asks for an empty volume.
+    let copiesImageContent: Bool
+
+    /// Short-syntax options accepted after the path. SELinux labels (`z`,
+    /// `Z`) and macOS consistency hints have no effect on Apple Container and
+    /// are ignored.
+    private static let knownOptions: Set<String> = ["ro", "rw", "nocopy", "z", "Z", "cached", "delegated", "consistent"]
 
     /// Parses `entry` (after variable resolution) as an anonymous volume.
     /// - Returns: `nil` for bind mounts and named volumes.
     init?(_ entry: String) {
         let components = entry.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
-        guard let destination = components.first, destination.hasPrefix("/") else { return nil }
-        switch components.count {
-        case 1:
-            mode = nil
-        case 2 where ["ro", "rw"].contains(components[1]):
-            mode = components[1]
-        default:
+        guard let destination = components.first, destination.hasPrefix("/"), components.count <= 2 else { return nil }
+        let options = components.count == 2 ? components[1].split(separator: ",").map(String.init) : []
+        // A second component that is not an option list is a container path:
+        // `/host:/container` is a bind mount.
+        guard components.count == 1 || (!options.isEmpty && options.allSatisfy(Self.knownOptions.contains)) else {
             return nil
         }
         self.destination = destination
+        self.mode = options.last { $0 == "ro" || $0 == "rw" }
+        self.copiesImageContent = !options.contains("nocopy")
     }
 
     /// The volume's name: stable across `up` runs, so a recreated container
@@ -351,8 +359,11 @@ struct AnonymousVolume: Equatable {
     /// ext4 volumes is removed first (`rmdir` never removes a non-empty
     /// directory), so the volume holds exactly what the image had.
     func seedArguments(volumeName: String, image: String, platform: String?) -> [String] {
-        let script = #"rmdir "$2/lost+found" 2>/dev/null; [ -d "$1" ] || exit 0; cp -a "$1"/. "$2"/ && chown "$(stat -c %u:%g "$1")" "$2" && chmod "$(stat -c %a "$1")" "$2""#
-        var arguments = ["run", "--rm"]
+        // $1: image path, $2: volume mount point, $3: "copy" or "nocopy".
+        let script = #"[ ! -d "$2/lost+found" ] || rmdir "$2/lost+found" || exit 1; [ "$3" = copy ] && [ -d "$1" ] || exit 0; cp -a "$1"/. "$2"/ && chown "$(stat -c %u:%g "$1")" "$2" && chmod "$(stat -c %a "$1")" "$2""#
+        // Root, whatever USER the image sets: the new volume is owned by root.
+        // The chown below then hands it to the owner of the image's directory.
+        var arguments = ["run", "--rm", "--user", "0:0"]
         if let platform {
             arguments.append(contentsOf: ["--platform", platform])
         }
@@ -360,7 +371,7 @@ struct AnonymousVolume: Equatable {
             "-v", "\(volumeName):\(Self.seedMountPoint)",
             "--entrypoint", "/bin/sh",
             image,
-            "-c", script, "seed", destination, Self.seedMountPoint,
+            "-c", script, "seed", destination, Self.seedMountPoint, copiesImageContent ? "copy" : "nocopy",
         ])
         return arguments
     }

@@ -814,6 +814,7 @@ public struct ComposeUp: AsyncParsableCommand, @unchecked Sendable {
         if process.terminationStatus != 0 {
             print(
                 "Warning: Could not copy \(image):\(volume.destination) into volume '\(volumeName)'; it starts empty. "
+                    + "To retry on the next 'up', remove the container and run 'container volume delete \(volumeName)'. "
                     + errorOutput.trimmingCharacters(in: .whitespacesAndNewlines))
         }
     }
