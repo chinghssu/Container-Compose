@@ -377,6 +377,44 @@ struct AnonymousVolume: Equatable {
     }
 }
 
+/// Mount point of a volume inside the short-lived helper containers that
+/// prepare it.
+let volumeHelperMountPoint = "/__container_compose_volume"
+
+/// `container run` arguments that remove the empty `lost+found` directory
+/// from a new volume, using `image` (a service image already present).
+///
+/// Apple Container formats each volume as an ext4 disk image, whose root
+/// starts with `lost+found`; a new Docker volume is empty. Images that
+/// initialize an empty data directory (Postgres, MySQL and others) refuse a
+/// directory that holds anything. `rmdir` only removes an empty directory, so
+/// this never deletes data.
+func lostFoundRemovalArguments(volumeName: String, image: String, platform: String?) -> [String] {
+    // Root, whatever USER the image sets: the volume and its lost+found are
+    // owned by root. Fails only when lost+found exists and cannot be removed.
+    var arguments = ["run", "--rm", "--user", "0:0"]
+    if let platform {
+        arguments.append(contentsOf: ["--platform", platform])
+    }
+    arguments.append(contentsOf: [
+        "-v", "\(volumeName):\(volumeHelperMountPoint)",
+        "--entrypoint", "/bin/sh",
+        image,
+        "-c", #"[ ! -d "$1/lost+found" ] || rmdir "$1/lost+found""#, "prepare", volumeHelperMountPoint,
+    ])
+    return arguments
+}
+
+/// The named volume a `-v` argument from `composeVolumeToRunArgs` mounts, or
+/// `nil` for a bind mount, whose source is an absolute host path.
+func namedVolumeSource(ofRunArgs args: [String]) -> String? {
+    guard args.count == 2, args[0] == "-v",
+        let source = args[1].split(separator: ":").first,
+        !source.hasPrefix("/")
+    else { return nil }
+    return String(source)
+}
+
 extension String: @retroactive Error {}
 
 /// A structure representing the result of a command-line process execution.
